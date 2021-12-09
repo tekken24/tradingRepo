@@ -27,7 +27,7 @@
 
           <a href="javascript:void(0);" @click="addIndicator" class="btn mt8 mb8 -text"> Add <i class="icon-plus ml8 "></i> </a>
         </div>
-        <div class="chart-overlay__title pane-overlay" @click="toggleIndicatorOverlay">Indicators <i class="icon-up -higher"></i></div>
+        <div class="chart-overlay__title pane-overlay" @click="toggleIndicatorOverlay">Indicators <i class="icon-up-thin -higher"></i></div>
       </div>
 
       <div class="chart-overlay__panel chart__markets">
@@ -53,7 +53,9 @@
             </label>
           </div>
         </div>
-        <div class="chart-overlay__title pane-overlay" @click="showMarketsOverlay = !showMarketsOverlay">Markets <i class="icon-up -higher"></i></div>
+        <div class="chart-overlay__title pane-overlay" @click="showMarketsOverlay = !showMarketsOverlay">
+          Markets <i class="icon-up-thin -higher"></i>
+        </div>
       </div>
     </div>
     <div class="chart-overlay -right chart__controls" :style="{ marginRight: axis[0] + 'px' }">
@@ -79,8 +81,7 @@ import {
   getTimeframeForHuman,
   floorTimestampToTimeframe
 } from '../../utils/helpers'
-import { MAX_BARS_PER_CHUNKS } from '../../utils/constants'
-import { getCustomColorsOptions } from './chartOptions'
+import { defaultChartOptions, getCustomColorsOptions } from './chartOptions'
 
 import aggregatorService from '@/services/aggregatorService'
 import historicalService, { HistoricalResponse } from '@/services/historicalService'
@@ -93,6 +94,7 @@ import ChartLayout from './ChartLayout.vue'
 import CreateIndicatorDialog from './CreateIndicatorDialog.vue'
 import { ChartPaneState } from '@/store/panesSettings/chart'
 import { getColorLuminance, joinRgba, splitRgba } from '@/utils/colors'
+import { Chunk } from './chartCache'
 
 @Component({
   name: 'Chart',
@@ -141,6 +143,7 @@ export default class extends Mixins(PaneMixin) {
 
   showMarketsOverlay = false
   showIndicatorsOverlay = false
+  timeToRecycle = Infinity
 
   paneControls = [
     {
@@ -156,7 +159,7 @@ export default class extends Mixins(PaneMixin) {
   ]
 
   private _onStoreMutation: () => void
-  private _keepAliveTimeout: number
+  private recycleInterval: number
   private _onPanTimeout: number
   private _chartController: ChartController
   private _legendElements: { [id: string]: HTMLElement }
@@ -296,23 +299,6 @@ export default class extends Mixins(PaneMixin) {
         case 'settings/TOGGLE_AUTO_HIDE_HEADERS':
           this.refreshChartDimensions()
           break
-        case 'app/SET_OPTIMAL_DECIMAL':
-        case 'settings/SET_DECIMAL_PRECISION':
-          for (const id in this.indicators) {
-            const indicator = (this.$store.state[this.paneId] as ChartPaneState).indicators[id]
-
-            if (!indicator.options) {
-              continue
-            }
-
-            if (indicator.options.priceFormat && indicator.options.priceFormat.type === 'price') {
-              this._chartController.setIndicatorOption(indicator.id, 'priceFormat.precision', mutation.payload)
-
-              this._chartController.setIndicatorOption(indicator.id, 'priceFormat.minMove', 1 / Math.pow(10, mutation.payload))
-            }
-          }
-
-          break
       }
     })
   }
@@ -321,8 +307,6 @@ export default class extends Mixins(PaneMixin) {
     this.showIndicatorsOverlay = this.$parent.$el.clientHeight > 420
 
     this.createChart()
-
-    this.keepAlive()
   }
 
   async createChart() {
@@ -333,6 +317,7 @@ export default class extends Mixins(PaneMixin) {
     await this.$nextTick()
 
     this.bindChartEvents()
+    this.setupRecycle()
 
     await this.fetch()
 
@@ -346,7 +331,7 @@ export default class extends Mixins(PaneMixin) {
 
     this._chartController.destroy()
 
-    clearTimeout(this._keepAliveTimeout)
+    clearTimeout(this.recycleInterval)
   }
 
   beforeDestroy() {
@@ -407,7 +392,7 @@ export default class extends Mixins(PaneMixin) {
     rangeToFetch.from = floorTimestampToTimeframe(Math.round(rangeToFetch.from), timeframe)
     rangeToFetch.to = floorTimestampToTimeframe(Math.round(rangeToFetch.to), timeframe) + timeframe
 
-    const barsCount = (rangeToFetch.to - rangeToFetch.from) / timeframe
+    const barsCount = Math.floor((rangeToFetch.to - rangeToFetch.from) / timeframe)
     const bytesPerBar = 112
     const estimatedSize = formatBytes(barsCount * historicalMarkets.length * bytesPerBar)
 
@@ -423,7 +408,9 @@ export default class extends Mixins(PaneMixin) {
     return historicalService
       .fetch(rangeToFetch.from * 1000, rangeToFetch.to * 1000, timeframe, historicalMarkets)
       .then(results => this.onHistorical(results))
-      .catch(() => {
+      .catch(err => {
+        console.error(err)
+
         this._reachedEnd = true
       })
       .then(() => {
@@ -507,66 +494,25 @@ export default class extends Mixins(PaneMixin) {
    * Render chart once everything is done
    */
   onHistorical(results: HistoricalResponse) {
-    {
-      /**
-       * @type {Chunk}
-       */
-      let chunk
-
-      switch (results.format) {
-        case 'point':
-          chunk = {
-            from: results.from,
-            to: results.to,
-            bars: results.data
-          }
-          break
-        default:
-          throw new Error('unsupported-historical-data-format')
-      }
-
-      if (chunk && chunk.bars.length) {
-        /**
-         * @type {Chunk[]}
-         */
-        const chunks = [
-          {
-            from: chunk.from,
-            to: chunk.from,
-            bars: []
-          }
-        ]
-
-        console.log(`[chart/fetch] success (${results.data.length} new ${results.format}s)`)
-
-        while (chunk.bars.length) {
-          const bar = chunk.bars.shift()
-
-          if (chunks[0].bars.length >= MAX_BARS_PER_CHUNKS && chunks[0].to < bar.timestamp) {
-            chunks.unshift({
-              from: bar.timestamp,
-              to: bar.timestamp,
-              bars: []
-            })
-          }
-
-          chunks[0].bars.push(bar)
-          chunks[0].to = bar.timestamp
-        }
-
-        console.debug(`[chart/fetch] save ${chunks.length} new chunks`)
-
-        for (const chunk of chunks) {
-          this._chartController.chartCache.saveChunk(chunk)
-        }
-
-        if (!(this.$store.state[this.paneId] as ChartPaneState).forceNormalizePrice) {
-          this._chartController.propagateInitialPrices = false
-        }
-
-        this._chartController.renderAll()
-      }
+    if (!results.data.length) {
+      debugger
     }
+
+    const chunk: Chunk = {
+      from: results.from,
+      to: results.to,
+      bars: results.data
+    }
+
+    console.debug(`[chart/fetch] prepend 1 new chunk`)
+
+    this._chartController.chartCache.saveChunk(chunk)
+
+    if (!(this.$store.state[this.paneId] as ChartPaneState).forceNormalizePrice) {
+      this._chartController.propagateInitialPrices = false
+    }
+
+    this._chartController.renderAll()
   }
 
   /**
@@ -631,37 +577,42 @@ export default class extends Mixins(PaneMixin) {
     this._chartController.chartInstance.timeScale().unsubscribeVisibleLogicalRangeChange(this.onPan)
   }
 
-  savePosition(visibleLogicalRange) {
-    const canvasWidth = this.$refs.chartContainer.querySelector('canvas').width
-    const barSpacing = canvasWidth / (visibleLogicalRange.to - visibleLogicalRange.from) / window.devicePixelRatio
-
-    this.$store.commit(this.paneId + '/SET_BAR_SPACING', barSpacing)
-  }
-
-  keepAlive() {
-    if (this._keepAliveTimeout) {
-      this.trimChart()
-      this.renderChart()
+  getBarSpacing(visibleLogicalRange) {
+    if (!visibleLogicalRange) {
+      return defaultChartOptions.timeScale.barSpacing
     }
 
-    this._keepAliveTimeout = setTimeout(this.keepAlive.bind(this), 1000 * 60 * 5)
+    const canvasWidth = this.$refs.chartContainer.querySelector('canvas').width
+    return canvasWidth / (visibleLogicalRange.to - visibleLogicalRange.from) / window.devicePixelRatio
   }
 
-  refreshChart() {
-    this.trimChart()
-    this.renderChart()
+  savePosition(visibleLogicalRange) {
+    this.$store.commit(this.paneId + '/SET_BAR_SPACING', this.getBarSpacing(visibleLogicalRange))
+  }
+
+  setupRecycle() {
+    this.recycleInterval = setInterval(this.trimChart.bind(this), 1000 * 60 * 3.5)
+    this.setTimeToRecycle()
   }
 
   trimChart() {
-    const visibleRange = this._chartController.getVisibleRange() as TimeRange
+    if (Date.now() > this.timeToRecycle) {
+      const visibleRange = this._chartController.getVisibleRange() as TimeRange
 
-    let end
+      let end
 
-    if (visibleRange) {
-      end = visibleRange.from - (visibleRange.to - visibleRange.from)
+      if (visibleRange) {
+        end = visibleRange.from - (visibleRange.to - visibleRange.from)
+      }
+
+      if (this._chartController.chartCache.trim(end)) {
+        this.renderChart()
+      }
+
+      this.setTimeToRecycle()
     }
 
-    this._chartController.chartCache.trim(end)
+    ;(this._chartController.chartInstance as any).fullUpdate()
   }
 
   renderChart() {
@@ -991,12 +942,24 @@ export default class extends Mixins(PaneMixin) {
   toggleLayout() {
     this.$store.commit(this.paneId + '/TOGGLE_LAYOUTING')
   }
+
+  setTimeToRecycle() {
+    const now = Date.now()
+
+    if (this._chartController.type === 'time') {
+      const chartWidth = this.$refs.chartContainer.querySelector('canvas').width
+      const barSpacing = this.getBarSpacing(this._chartController.chartInstance.timeScale().getVisibleLogicalRange())
+      this.timeToRecycle = now + Math.min(1000 * 60 * 60 * 24, (parseInt(this.timeframe) * 1000 * (chartWidth / barSpacing)) / 2)
+    }
+
+    this.timeToRecycle = now + 900000
+  }
 }
 </script>
 
 <style lang="scss" scoped>
 .pane-chart {
-  font-family: 'Barlow Semi Condensed';
+  font-family: $font-condensed;
 
   &:hover .chart-overlay {
     display: flex;
@@ -1107,12 +1070,12 @@ export default class extends Mixins(PaneMixin) {
       color: var(--theme-color-base);
     }
 
-    .icon-up {
+    .icon-up-thin {
       vertical-align: middle;
     }
 
     &:first-child {
-      .icon-up {
+      .icon-up-thin {
         display: inline-block;
         transform: rotateZ(180deg);
       }

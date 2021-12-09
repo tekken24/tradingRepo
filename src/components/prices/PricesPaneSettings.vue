@@ -4,14 +4,23 @@
       <label class="checkbox-control" v-tippy="{ placement: 'left' }" title="ex: BTC-USD">
         <input type="checkbox" class="form-control" :checked="showPairs" @change="$store.commit(paneId + '/TOGGLE_PAIRS')" />
         <div></div>
-        <span>Ticker names are {{ showPairs ? 'visible' : 'hidden' }}</span>
+        <span>Show pairs</span>
       </label>
     </div>
+
     <div class="form-group mb8">
       <label class="checkbox-control">
-        <input type="checkbox" class="form-control" :checked="boldFont" @change="$store.commit(paneId + '/TOGGLE_BOLD_FONT')" />
+        <input type="checkbox" class="form-control" :checked="showVolume" @change="$store.commit(paneId + '/TOGGLE_VOLUME')" />
         <div></div>
-        <span>{{ boldFont ? 'Bold' : 'Thin' }} text</span>
+        <span>Show volume</span>
+      </label>
+    </div>
+
+    <div class="form-group mb8">
+      <label class="checkbox-control">
+        <input type="checkbox" class="form-control" :checked="showChange" @change="$store.commit(paneId + '/TOGGLE_CHANGE')" />
+        <div></div>
+        <span>Show change</span>
       </label>
     </div>
 
@@ -21,6 +30,24 @@
         <div></div>
         <span>Order change animations are {{ animateSort ? 'enabled' : 'disabled' }}</span>
       </label>
+    </div>
+
+    <div class="form-group mb8">
+      <label>Sort by</label>
+      <div class="column">
+        <dropdown
+          class="-left"
+          :selected="sortType"
+          :options="['none', 'price', 'volume', 'change']"
+          selectionClass="-outline form-control -arrow w-100"
+          return-value
+          @output="selectSortType($event)"
+        ></dropdown>
+        <label class="checkbox-control -auto" v-if="sortType">
+          <input type="checkbox" class="form-control" :checked="sortOrder === 1" @change="$store.commit(paneId + '/TOGGLE_SORT_ORDER')" />
+          <div on="ASC" off="DESC"></div>
+        </label>
+      </div>
     </div>
 
     <!--<small v-if="animateSort && disableAnimations" class="help-text mt8 mb16">
@@ -52,12 +79,32 @@ export default class extends Vue {
     return this.$store.state[this.paneId].showPairs
   }
 
-  get boldFont() {
-    return this.$store.state[this.paneId].boldFont
+  get showVolume() {
+    return this.$store.state[this.paneId].showVolume
+  }
+
+  get showChange() {
+    return this.$store.state[this.paneId].showChange
   }
 
   get animateSort() {
     return this.$store.state[this.paneId].animateSort
+  }
+
+  get sortType() {
+    return this.$store.state[this.paneId].sortType
+  }
+
+  get sortOrder() {
+    return this.$store.state[this.paneId].sortOrder
+  }
+
+  selectSortType(option) {
+    if (option === this.sortType) {
+      this.$store.commit(this.paneId + '/TOGGLE_SORT_ASC')
+    }
+
+    this.$store.commit(this.paneId + '/SET_SORT_TYPE', option)
   }
 }
 </script>
